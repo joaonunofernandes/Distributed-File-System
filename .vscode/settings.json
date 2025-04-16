@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "document_struct.h": "c",
+        "stdio.h": "c",
+        "errno.h": "c",
+        "dserver.h": "c",
+        "unistd.h": "c",
+        "types.h": "c"
+    }
+}

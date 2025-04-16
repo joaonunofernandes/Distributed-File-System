@@ -61,4 +61,4 @@ typedef struct {
 #define SERVER_PIPE "/tmp/server_pipe"
 #define CLIENT_PIPE_FORMAT "/tmp/client_pipe_%d"
 
-#endif
+#endif  

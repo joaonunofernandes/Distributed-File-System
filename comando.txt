@@ -1,0 +1,3 @@
+./dclient -a "The United States Constitution" "Founding Fathers" "1975" "5.txt"
+./dclient -a "Lincoln's Second Inaugural Address, March 4, 1865" "Abraham Lincoln" "1978" "8.txt"
+./dclient -a "Sou Poeta" "Eu" "2025" "soupoeta.txt"

@@ -32,6 +32,15 @@ int add_document(Document* doc) {
         // ou seja, remove-se o documento mais antigo (o primeiro adicionado à cache)
         int idx_to_replace = 0; // Índice 0 corresponde ao documento mais antigo na implementação FCFS
         
+        // Adiciona mensagem a informar que o FCFS está a ser utilizado
+        char msg[256];
+        int len = snprintf(msg, sizeof(msg), 
+                        "Cache cheia: a aplicar política FCFS para remover documento ID: %d, Título: '%s' para incluir novo documento Título: '%s'\n", 
+                        cache.docs[idx_to_replace]->id, 
+                        cache.docs[idx_to_replace]->title,
+                        doc->title);
+        write(STDOUT_FILENO, msg, len);
+        
         // Liberta a memória alocada para o documento mais antigo
         // Esta libertação de memória é crucial para evitar fugas de memória (memory leaks)
         free(cache.docs[idx_to_replace]);
@@ -171,81 +180,27 @@ int count_lines_with_keyword(Document* doc, char* keyword) {
     snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, doc->path);
 
     // Variáveis para pipes e PIDs
-    int pipe_cat_grep[2];  // Pipe para comunicação: cat -> grep
     int pipe_grep_wc[2];   // Pipe para comunicação: grep -> wc
     int pipe_wc_parent[2]; // Pipe para comunicação: wc -> processo pai
-    pid_t pid_cat, pid_grep, pid_wc; // PIDs dos processos filho
+    pid_t pid_grep, pid_wc; // PIDs dos processos filho
     int status;
     int line_count = -1; // Valor padrão em caso de erro
 
-    // Cria os três pipes necessários para a comunicação entre processos
-    // pipe() cria um canal de comunicação unidirecional:
-    // pipe_X[0] é a extremidade de leitura (saída) do pipe
-    // pipe_X[1] é a extremidade de escrita (entrada) do pipe
-    if (pipe(pipe_cat_grep) < 0 || pipe(pipe_grep_wc) < 0 || pipe(pipe_wc_parent) < 0) {
+    // Cria os dois pipes necessários para a comunicação entre processos
+    if (pipe(pipe_grep_wc) < 0 || pipe(pipe_wc_parent) < 0) {
         perror("Erro ao criar pipes");
         // Fecha os pipes que possam ter sido abertos para evitar vazamento de descritores
-        // Verifica cada extremidade individualmente antes de fechar
-        if (pipe_cat_grep[0] >= 0) close(pipe_cat_grep[0]);
-        if (pipe_cat_grep[1] >= 0) close(pipe_cat_grep[1]);
         if (pipe_grep_wc[0] >= 0) close(pipe_grep_wc[0]);
         if (pipe_grep_wc[1] >= 0) close(pipe_grep_wc[1]);
         if (pipe_wc_parent[0] >= 0) close(pipe_wc_parent[0]);
         if (pipe_wc_parent[1] >= 0) close(pipe_wc_parent[1]);
         return -1;
     }
-    /*
-    O cat não é necessário. A pipeline grep "palavra-chave" <ficheiro> | wc -l 
-    funciona perfeitamente e é mais eficiente por usar menos um processo. 
-    A alternativa grep -c "palavra-chave" <ficheiro> é ainda mais eficiente. 
-    A inclusão do cat na implementação anterior foi mais por seguir um padrão comum de 
-    construção de pipelines do que por necessidade técnica.
-    */
 
-    // 1. Fork para o processo 'cat'
-    // O comando 'cat' irá ler o ficheiro de texto e enviar o seu conteúdo para o pipe
-    pid_cat = fork();
-    if (pid_cat == 0) { // Processo filho para executar 'cat'
-        // Redireciona stdout para o pipe_cat_grep (cat escreverá neste pipe)
-        close(pipe_cat_grep[0]); // Fecha a extremidade de leitura do pipe cat->grep (não utilizada por cat)
-        dup2(pipe_cat_grep[1], STDOUT_FILENO); // Redireciona stdout para a extremidade de escrita do pipe
-        close(pipe_cat_grep[1]); // Fecha o descritor original após dup2 (já foi duplicado)
-
-        // Fecha todas as extremidades de pipes não utilizadas por este processo
-        // É importante fechar todos os descritores não utilizados para evitar
-        // bloqueios na comunicação entre processos
-        close(pipe_grep_wc[0]); // Fecha leitura do pipe grep->wc (não utilizada por cat)
-        close(pipe_grep_wc[1]); // Fecha escrita do pipe grep->wc (não utilizada por cat)
-        close(pipe_wc_parent[0]); // Fecha leitura do pipe wc->pai (não utilizada por cat)
-        close(pipe_wc_parent[1]); // Fecha escrita do pipe wc->pai (não utilizada por cat)
-
-        // Executa o comando cat, substituindo o processo atual
-        // cat irá ler o ficheiro e enviar seu conteúdo para stdout (redirecionado para o pipe)
-        execlp("cat", "cat", full_path, (char*)NULL);
-        // Se execlp retornar, significa que houve erro
-        perror("Erro ao executar cat");
-        _exit(1); // Termina o processo filho com código de erro 1
-    } else if (pid_cat < 0) { // Erro ao criar o processo filho
-        perror("Erro no fork para cat");
-        // Fecha todos os pipes antes de retornar para evitar vazamento de recursos
-        close(pipe_cat_grep[0]); 
-        close(pipe_cat_grep[1]);
-        close(pipe_grep_wc[0]); 
-        close(pipe_grep_wc[1]);
-        close(pipe_wc_parent[0]); 
-        close(pipe_wc_parent[1]);
-        return -1;
-    }
-
-    // 2. Fork para o processo 'grep'
-    // O grep filtrará as linhas que contêm a palavra-chave
+    // 1. Fork para o processo 'grep'
+    // O grep filtrará as linhas que contêm a palavra-chave diretamente do arquivo
     pid_grep = fork();
     if (pid_grep == 0) { // Processo filho para executar 'grep'
-        // Redireciona stdin do pipe_cat_grep (grep lerá deste pipe)
-        close(pipe_cat_grep[1]); // Fecha a extremidade de escrita do pipe cat->grep (não utilizada por grep)
-        dup2(pipe_cat_grep[0], STDIN_FILENO); // Redireciona stdin para a extremidade de leitura do pipe
-        close(pipe_cat_grep[0]); // Fecha o descritor original após dup2 (já foi duplicado)
-
         // Redireciona stdout para o pipe_grep_wc (grep escreverá neste pipe)
         close(pipe_grep_wc[0]); // Fecha a extremidade de leitura do pipe grep->wc (não utilizada por grep)
         dup2(pipe_grep_wc[1], STDOUT_FILENO); // Redireciona stdout para a extremidade de escrita do pipe
@@ -256,23 +211,21 @@ int count_lines_with_keyword(Document* doc, char* keyword) {
         close(pipe_wc_parent[1]); // Fecha escrita do pipe wc->pai (não utilizada por grep)
 
         // Executa o comando grep, filtrando as linhas que contêm a palavra-chave
-        execlp("grep", "grep", keyword, (char*)NULL);
+        // O grep lê diretamente do arquivo, eliminando a necessidade do cat
+        execlp("grep", "grep", keyword, full_path, (char*)NULL);
         perror("Erro ao executar grep");
         _exit(1); // Termina com erro
     } else if (pid_grep < 0) { // Erro ao criar o processo filho
         perror("Erro no fork para grep");
-        // Fecha pipes e espera pelo filho cat antes de retornar
-        close(pipe_cat_grep[0]); 
-        close(pipe_cat_grep[1]);
+        // Fecha pipes antes de retornar
         close(pipe_grep_wc[0]); 
         close(pipe_grep_wc[1]);
         close(pipe_wc_parent[0]); 
         close(pipe_wc_parent[1]);
-        waitpid(pid_cat, NULL, 0); // Limpa o processo cat para evitar zombies
         return -1;
     }
 
-    // 3. Fork para o processo 'wc'
+    // 2. Fork para o processo 'wc'
     // wc contará o número de linhas que contêm a palavra-chave
     pid_wc = fork();
     if (pid_wc == 0) { // Processo filho para executar 'wc'
@@ -286,33 +239,23 @@ int count_lines_with_keyword(Document* doc, char* keyword) {
         dup2(pipe_wc_parent[1], STDOUT_FILENO); // Redireciona stdout para a extremidade de escrita do pipe
         close(pipe_wc_parent[1]); // Fecha o descritor original após dup2 (já foi duplicado)
 
-        // Fecha os pipes não utilizados por este processo
-        close(pipe_cat_grep[0]); // Fecha leitura do pipe cat->grep (não utilizada por wc)
-        close(pipe_cat_grep[1]); // Fecha escrita do pipe cat->grep (não utilizada por wc)
-
         // Executa o comando wc -l para contar linhas
         execlp("wc", "wc", "-l", (char*)NULL);
         perror("Erro ao executar wc");
         _exit(1); // Termina com erro
     } else if (pid_wc < 0) { // Erro ao criar o processo filho
         perror("Erro no fork para wc");
-        // Fecha pipes e espera pelos filhos cat e grep antes de retornar
-        close(pipe_cat_grep[0]); 
-        close(pipe_cat_grep[1]);
+        // Fecha pipes e espera pelo filho grep antes de retornar
         close(pipe_grep_wc[0]); 
         close(pipe_grep_wc[1]);
         close(pipe_wc_parent[0]); 
         close(pipe_wc_parent[1]);
-        waitpid(pid_cat, NULL, 0); // Limpa o processo cat
         waitpid(pid_grep, NULL, 0); // Limpa o processo grep
         return -1;
     }
 
-    // 4. Processo Pai - Lê o resultado do wc
+    // 3. Processo Pai - Lê o resultado do wc
     // O pai deve fechar todas as extremidades dos pipes que não utiliza
-    // para evitar bloqueios na comunicação
-    close(pipe_cat_grep[0]); // Fecha leitura do pipe cat->grep (não utilizada pelo pai)
-    close(pipe_cat_grep[1]); // Fecha escrita do pipe cat->grep (não utilizada pelo pai)
     close(pipe_grep_wc[0]); // Fecha leitura do pipe grep->wc (não utilizada pelo pai)
     close(pipe_grep_wc[1]); // Fecha escrita do pipe grep->wc (não utilizada pelo pai)
     close(pipe_wc_parent[1]); // Fecha escrita do pipe wc->pai (não utilizada pelo pai)
@@ -325,41 +268,28 @@ int count_lines_with_keyword(Document* doc, char* keyword) {
     if (bytes_read > 0) {
         buffer[bytes_read] = '\0'; // Adiciona terminador nulo para converter em string
         line_count = atoi(buffer); // Converte a string com o número de linhas para inteiro
-    } else if (bytes_read < 0) {
-        perror("Erro ao ler do pipe de wc");
-        line_count = -1; // Mantém o valor de erro
     } else {
-        // bytes_read == 0 significa que o pipe foi fechado sem enviar dados
-        // Isso pode acontecer se o grep não encontrou nenhuma linha com a palavra-chave
-        // Nesse caso, assumimos 0 linhas encontradas
-        if (bytes_read == 0) {
-            line_count = 0;
-        }
+        // Se não houver dados ou ocorrer erro, assume 0 linhas
+        line_count = 0;
     }
 
     // Fecha o descritor de leitura restante no pai
     close(pipe_wc_parent[0]);
 
-    // Espera que todos os três processos filhos terminem para evitar processos zombie
-    waitpid(pid_cat, &status, 0);
+    // Espera que todos os processos filhos terminem para evitar processos zombie
     waitpid(pid_grep, &status, 0);
-    // Verifica o estado do wc para confirmar que a pipeline funcionou corretamente
     waitpid(pid_wc, &status, 0);
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        // Se wc não terminou normalmente com estado 0, algo correu mal na pipeline
-        write(STDERR_FILENO, "Pipeline 'cat|grep|wc' pode ter falhado\n", strlen("Pipeline 'cat|grep|wc' pode ter falhado\n"));
-        // Não sobrescreve line_count se já foi lido com sucesso
-        if (bytes_read <= 0) line_count = -1;
-    }
+
     return line_count; // Retorna o número de linhas encontradas ou um código de erro
 }
 
-// Função para procurar documentos com uma palavra-chave (versão série)
+// Função para procurar documentos com uma palavra-chave (versão série otimizada)
 int search_documents_with_keyword_serial(char* keyword, int* result_ids) {
     int count = 0; // Contador de documentos encontrados
     
     // 1. Procura em todos os documentos da cache primeiro (mais rápido)
     for (int i = 0; i < cache.num_docs && count < MAX_RESULT_IDS; i++) {
+        // Usa a função count_lines_with_keyword para verificar se o documento contém a palavra-chave
         int lines = count_lines_with_keyword(cache.docs[i], keyword);
         if (lines > 0) {
             // Encontrou pelo menos uma linha com a palavra-chave neste documento
@@ -389,48 +319,43 @@ int search_documents_with_keyword_serial(char* keyword, int* result_ids) {
         }
         
         if (!in_cache) {
-            // Se não está na cache, abre o ficheiro e procura a palavra-chave
+            // Se não está na cache, usa grep diretamente para verificar se o documento contém a palavra-chave
             char full_path[MAX_PATH_SIZE + 256];
             snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, disk_doc.path);
             
-            int doc_fd = open(full_path, O_RDONLY);
-            if (doc_fd >= 0) {
-                // Lê o ficheiro linha por linha procurando a palavra-chave
-                char buffer[4096];
-                int found = 0;
-                int pos = 0;
-                char c;
+            // Cria um pipe para comunicação entre o processo pai e o grep
+            int pipe_grep[2];
+            if (pipe(pipe_grep) < 0) {
+                continue; // Se não conseguir criar o pipe, passa para o próximo documento
+            }
+            
+            // Fork para executar o grep
+            pid_t pid = fork();
+            if (pid == 0) { // Processo filho
+                // Redireciona stdout para o pipe
+                close(pipe_grep[0]); // Fecha a extremidade de leitura
+                dup2(pipe_grep[1], STDOUT_FILENO);
+                close(pipe_grep[1]);
                 
-                // Lê o ficheiro caractere por caractere até encontrar uma linha com a palavra-chave
-                while (!found && read(doc_fd, &c, 1) == 1) {
-                    if (c == '\n' || pos >= sizeof(buffer) - 1) {
-                        // Finaliza a linha atual para verificar
-                        buffer[pos] = '\0';
-                        if (strstr(buffer, keyword) != NULL) {
-                            // Encontrou a palavra-chave nesta linha
-                            found = 1;
-                        }
-                        pos = 0; // Reinicia o buffer para a próxima linha
-                    } else {
-                        // Adiciona o caractere ao buffer da linha atual
-                        buffer[pos++] = c;
-                    }
-                }
+                // Executa grep -q (quiet mode) para apenas retornar o código de saída
+                execlp("grep", "grep", "-q", keyword, full_path, (char*)NULL);
+                perror("Erro ao executar grep");
+                _exit(1);
+            } else if (pid > 0) { // Processo pai
+                close(pipe_grep[1]); // Fecha a extremidade de escrita
                 
-                // Verifica a última linha se não terminou com quebra de linha
-                if (!found && pos > 0) {
-                    buffer[pos] = '\0';
-                    if (strstr(buffer, keyword) != NULL) {
-                        found = 1;
-                    }
-                }
+                int status;
+                waitpid(pid, &status, 0);
                 
-                close(doc_fd); // Fecha o ficheiro do documento
-                
-                if (found) {
-                    // Se encontrou a palavra-chave, adiciona o ID aos resultados
+                // Se grep retornar 0, significa que encontrou a palavra-chave
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                     result_ids[count++] = disk_doc.id;
                 }
+                
+                close(pipe_grep[0]);
+            } else { // Erro no fork
+                close(pipe_grep[0]);
+                close(pipe_grep[1]);
             }
         }
     }
@@ -439,7 +364,7 @@ int search_documents_with_keyword_serial(char* keyword, int* result_ids) {
     return count; // Retorna o número de documentos encontrados
 }
 
-// Função auxiliar para processos filhos na procura paralela
+// Função auxiliar para processos filhos na procura paralela (otimizada)
 void search_process(int start, int end, char* keyword, char* temp_file, int* cache_ids, int num_cache_ids) {
     // Abre o ficheiro da base de dados
     int fd = open("database.bin", O_RDONLY);
@@ -481,32 +406,45 @@ void search_process(int start, int end, char* keyword, char* temp_file, int* cac
         }
         
         if (!in_cache) {
-            // Se não está na cache, procura a palavra-chave no ficheiro do documento
+            // Se não está na cache, usa grep para verificar se o documento contém a palavra-chave
             char full_path[MAX_PATH_SIZE + 256];
             snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, doc.path);
             
-            int doc_fd = open(full_path, O_RDONLY);
-            if (doc_fd >= 0) {
-                // Usa um buffer maior para leitura em blocos (mais eficiente)
-                char buffer[8192]; 
-                ssize_t bytes_read;
-                int found = 0;
+            // Cria um pipe para comunicação entre o processo e o grep
+            int pipe_grep[2];
+            if (pipe(pipe_grep) < 0) {
+                continue; // Se não conseguir criar o pipe, passa para o próximo documento
+            }
+            
+            // Fork para executar o grep
+            pid_t pid = fork();
+            if (pid == 0) { // Processo filho
+                // Redireciona stdout para o pipe
+                close(pipe_grep[0]); // Fecha a extremidade de leitura
+                dup2(pipe_grep[1], STDOUT_FILENO);
+                close(pipe_grep[1]);
                 
-                // Lê o ficheiro em blocos grandes para aumentar a eficiência
-                // Procura a palavra-chave em cada bloco
-                while (!found && (bytes_read = read(doc_fd, buffer, sizeof(buffer) - 1)) > 0) {
-                    buffer[bytes_read] = '\0'; // Termina o buffer para usar strstr
-                    if (strstr(buffer, keyword) != NULL) {
-                        found = 1; // Palavra-chave encontrada neste bloco
+                // Executa grep -q (quiet mode) para apenas retornar o código de saída
+                execlp("grep", "grep", "-q", keyword, full_path, (char*)NULL);
+                perror("Erro ao executar grep");
+                _exit(1);
+            } else if (pid > 0) { // Processo pai
+                close(pipe_grep[1]); // Fecha a extremidade de escrita
+                
+                int status;
+                waitpid(pid, &status, 0);
+                
+                // Se grep retornar 0, significa que encontrou a palavra-chave
+                if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                    if (count < MAX_RESULT_IDS) {
+                        found_ids[count++] = doc.id;
                     }
                 }
                 
-                close(doc_fd); // Fecha o ficheiro do documento
-                
-                if (found && count < MAX_RESULT_IDS) {
-                    // Se encontrou a palavra-chave, adiciona o ID aos resultados
-                    found_ids[count++] = doc.id;
-                }
+                close(pipe_grep[0]);
+            } else { // Erro no fork
+                close(pipe_grep[0]);
+                close(pipe_grep[1]);
             }
         }
     }
@@ -525,36 +463,18 @@ void search_process(int start, int end, char* keyword, char* temp_file, int* cac
     exit(0); // Termina o processo filho com sucesso
 }
 
+
 // Função para procurar documentos com uma palavra-chave (versão paralela otimizada)
 int search_documents_with_keyword_parallel(char* keyword, int* result_ids, int nr_processes) {
     int count = 0; // Contador de documentos encontrados
     
     // 1. Primeiro, processa todos os documentos da cache (em memória)
     for (int i = 0; i < cache.num_docs && count < MAX_RESULT_IDS; i++) {
-        // Usa a abordagem mais eficiente para verificar o conteúdo
-        char full_path[MAX_PATH_SIZE + 256];
-        snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, cache.docs[i]->path);
-        
-        int doc_fd = open(full_path, O_RDONLY);
-        if (doc_fd >= 0) {
-            // Lê o ficheiro em blocos grandes para maior eficiência
-            char buffer[8192];
-            ssize_t bytes_read;
-            int found = 0;
-            
-            while (!found && (bytes_read = read(doc_fd, buffer, sizeof(buffer) - 1)) > 0) {
-                buffer[bytes_read] = '\0';
-                if (strstr(buffer, keyword) != NULL) {
-                    found = 1; // Palavra-chave encontrada
-                }
-            }
-            
-            close(doc_fd); // Fecha o ficheiro
-            
-            if (found) {
-                // Se encontrou a palavra-chave, adiciona o ID aos resultados
-                result_ids[count++] = cache.docs[i]->id;
-            }
+        // Usa a função count_lines_with_keyword para verificar se o documento contém a palavra-chave
+        int lines = count_lines_with_keyword(cache.docs[i], keyword);
+        if (lines > 0) {
+            // Se encontrou a palavra-chave, adiciona o ID aos resultados
+            result_ids[count++] = cache.docs[i]->id;
         }
     }
     
@@ -587,7 +507,7 @@ int search_documents_with_keyword_parallel(char* keyword, int* result_ids, int n
     // 5. Ajusta o número de processos conforme necessário
     if (nr_processes <= 0) nr_processes = 1; // Garante pelo menos 1 processo
     if (nr_processes > num_docs_disk) nr_processes = num_docs_disk; // Não excede o número de documentos
-    if (nr_processes > 8) nr_processes = 8; // Limita a 8 processos para evitar sobrecarga do sistema
+    if (nr_processes > 8) nr_processes = 20; // Limita a 20 processos para evitar sobrecarga do sistema
     
     // 6. Se for para usar apenas 1 processo ou poucos documentos, não vale a pena paralelizar
     if (nr_processes <= 1 || num_docs_disk <= 10) {

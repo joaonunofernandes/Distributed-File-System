@@ -1,3 +1,5 @@
 ./dclient -a "The United States Constitution" "Founding Fathers" "1975" "5.txt"
 ./dclient -a "Lincoln's Second Inaugural Address, March 4, 1865" "Abraham Lincoln" "1978" "8.txt"
-./dclient -a "Sou Poeta" "Eu" "2025" "soupoeta.txt"
+./dclient -a "Lincoln's First Inaugural Address, March 4, 1861" "Abraham Lincoln" "1979" "9.txt"
+./dclient -a "Alice's Adventures in Wonderland" "Lewis Carroll" "1994" "11.txt"
+./dclient -a "The King James Bible" "King James" "1989" "10.txt"

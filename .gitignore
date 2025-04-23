@@ -1,2 +1,9 @@
 .DS_Store
 **/.DS_Store
+
+# Ignorar pasta DatasetTest e o seu conteúdo
+/DatasetTest/
+/DatasetTest.zip
+
+#Ignorar pasta documentos e o seu conteúdo
+/documents/

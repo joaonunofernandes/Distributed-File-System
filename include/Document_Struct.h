@@ -18,7 +18,7 @@
 #define MAX_YEAR_SIZE 5    // 4 caracteres + terminador nulo
 #define MAX_PATH_SIZE 200  // Aumentado devido à dimensão do caminho no PC
 #define MAX_KEYWORD_SIZE 64
-#define MAX_DOCS 1000      // Número máximo de documentos na cache/disco (ajustar conforme necessário)
+#define MAX_DOCS 2000      // Número máximo de documentos na cache/disco (ajustar conforme necessário)
 #define MAX_RESULT_IDS 1000 // Número máximo de IDs retornados numa pesquisa
 
 // Definição das operações possíveis entre cliente e servidor

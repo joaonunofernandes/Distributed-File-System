@@ -121,55 +121,58 @@ Document* find_document(int id) {
     return NULL; // Documento não encontrado nem na cache nem no disco
 }
 
-// Função para remover um documento
 int remove_document(int id) {
-    // Primeiro procura o documento na cache
+    // 1. Tenta remover da cache
     for (int i = 0; i < cache.num_docs; i++) {
         if (cache.docs[i]->id == id) {
-            // Remove da cache libertando a memória alocada
             free(cache.docs[i]);
-            
-            // Reordena a cache movendo todos os documentos seguintes uma posição para trás
             for (int j = i; j < cache.num_docs - 1; j++) {
                 cache.docs[j] = cache.docs[j + 1];
             }
-            cache.num_docs--; // Decrementa o contador de documentos
-            
-            // Marca a cache como modificada, mas não grava imediatamente no disco
-            // A gravação só acontecerá com o comando -f (SHUTDOWN)
+            cache.num_docs--;
             cache.modified = 1;
-            
-            return 0; // Sucesso
+            return 0;
         }
     }
-    
-    // Se não encontrou na cache, verifica se existe no disco
-    Document* doc = find_document(id);
-    if (doc) {
-        // Se encontrou, find_document pode tê-lo adicionado à cache ou retornado uma cópia temporária
-        // Procura novamente na cache para remover se foi adicionado
-        for (int i = 0; i < cache.num_docs; i++) {
-            if (cache.docs[i]->id == id) {
-                // Remove da cache
-                free(cache.docs[i]);
-                
-                // Reordena a cache
-                for (int j = i; j < cache.num_docs - 1; j++) {
-                    cache.docs[j] = cache.docs[j + 1];
-                }
-                cache.num_docs--;
-                break;
-            }
-        }
-        
-        // Marca a cache como modificada para futura persistência
-        cache.modified = 1;
-        
-        return 0; // Sucesso
+
+    // 2. Se não está na cache, remove diretamente do ficheiro database.bin
+    int fd = open("database.bin", O_RDWR);
+    if (fd < 0) return -1;
+
+    int next_id_disk, num_docs_disk;
+    if (read(fd, &next_id_disk, sizeof(int)) != sizeof(int) ||
+        read(fd, &num_docs_disk, sizeof(int)) != sizeof(int)) {
+        close(fd);
+        return -1;
     }
-    
-    return -1; // Documento não encontrado
+
+    // Lê todos os documentos
+    Document docs[MAX_DOCS];
+    int valid_docs = 0;
+
+    for (int i = 0; i < num_docs_disk; i++) {
+        Document d;
+        if (read(fd, &d, sizeof(Document)) != sizeof(Document)) break;
+        if (d.id != id) {
+            docs[valid_docs++] = d;
+        }
+    }
+
+    // Reescreve o ficheiro com os documentos válidos
+    lseek(fd, 0, SEEK_SET);
+    write(fd, &next_id_disk, sizeof(int));
+    write(fd, &valid_docs, sizeof(int));
+    for (int i = 0; i < valid_docs; i++) {
+        write(fd, &docs[i], sizeof(Document));
+    }
+
+    // Trunca o ficheiro no tamanho exato
+    ftruncate(fd, sizeof(int) * 2 + valid_docs * sizeof(Document));
+    close(fd);
+
+    return 0; // Sucesso
 }
+
 
 // Função para contar linhas com uma palavra-chave num documento
 int count_lines_with_keyword(Document* doc, char* keyword) {
@@ -364,268 +367,228 @@ int search_documents_with_keyword_serial(char* keyword, int* result_ids) {
     return count; // Retorna o número de documentos encontrados
 }
 
-// Função auxiliar para processos filhos na procura paralela (otimizada)
 void search_process(int start, int end, char* keyword, char* temp_file, int* cache_ids, int num_cache_ids) {
-    // Abre o ficheiro da base de dados
+    char msg[128];
+    int len = snprintf(msg, sizeof(msg), "[PID %d] Iniciado: documentos [%d, %d)\n", getpid(), start, end);
+    write(STDOUT_FILENO, msg, len);
+
     int fd = open("database.bin", O_RDONLY);
     if (fd < 0) {
-        // Se não conseguir abrir o ficheiro, cria um ficheiro temporário vazio e termina
         int temp_fd = open(temp_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (temp_fd >= 0) close(temp_fd);
-        exit(0); // Termina o processo filho
+        exit(0);
     }
-    
-    // Salta o cabeçalho da base de dados (8 bytes: next_id e num_docs)
+
     lseek(fd, 2 * sizeof(int), SEEK_SET);
-    
-    // Posiciona o cursor no início do intervalo de documentos designado para este processo
-    // Cada documento ocupa sizeof(Document) bytes no ficheiro
     lseek(fd, start * sizeof(Document), SEEK_CUR);
-    
-    // Abre o ficheiro temporário onde serão escritos os resultados deste processo
+
     int temp_fd = open(temp_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (temp_fd < 0) {
-        close(fd); // Fecha o ficheiro da base de dados
-        exit(0); // Termina o processo se não conseguir criar o ficheiro temporário
+        close(fd);
+        exit(0);
     }
-    
-    // Buffer para armazenar os IDs dos documentos encontrados
+
     int found_ids[MAX_RESULT_IDS];
-    int count = 0; // Contador de documentos encontrados
-    
-    // Processa os documentos no intervalo [start, end)
+    int count = 0;
     Document doc;
+
     for (int i = 0; i < (end - start) && read(fd, &doc, sizeof(Document)) == sizeof(Document); i++) {
-        // Verifica se este documento já está na cache (para evitar duplicados)
-        int in_cache = 0;
+        int skip = 0;
         for (int j = 0; j < num_cache_ids; j++) {
-            if (cache_ids[j] == doc.id) {
-                in_cache = 1;
+            if (doc.id == cache_ids[j]) {
+                skip = 1;
                 break;
             }
         }
-        
-        if (!in_cache) {
-            // Se não está na cache, usa grep para verificar se o documento contém a palavra-chave
-            char full_path[MAX_PATH_SIZE + 256];
-            snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, doc.path);
-            
-            // Cria um pipe para comunicação entre o processo e o grep
-            int pipe_grep[2];
-            if (pipe(pipe_grep) < 0) {
-                continue; // Se não conseguir criar o pipe, passa para o próximo documento
-            }
-            
-            // Fork para executar o grep
+        if (skip) continue;
+
+        char full_path[MAX_PATH_SIZE + 256];
+        snprintf(full_path, sizeof(full_path), "%s/%s", base_folder, doc.path);
+
+        int pipefd[2];
+        if (pipe(pipefd) == 0) {
             pid_t pid = fork();
-            if (pid == 0) { // Processo filho
-                // Redireciona stdout para o pipe
-                close(pipe_grep[0]); // Fecha a extremidade de leitura
-                dup2(pipe_grep[1], STDOUT_FILENO);
-                close(pipe_grep[1]);
-                
-                // Executa grep -q (quiet mode) para apenas retornar o código de saída
+            if (pid == 0) {
+                close(pipefd[0]);
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
                 execlp("grep", "grep", "-q", keyword, full_path, (char*)NULL);
-                perror("Erro ao executar grep");
                 _exit(1);
-            } else if (pid > 0) { // Processo pai
-                close(pipe_grep[1]); // Fecha a extremidade de escrita
-                
+            } else if (pid > 0) {
+                close(pipefd[1]);
                 int status;
                 waitpid(pid, &status, 0);
-                
-                // Se grep retornar 0, significa que encontrou a palavra-chave
                 if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                     if (count < MAX_RESULT_IDS) {
                         found_ids[count++] = doc.id;
+                        len = snprintf(msg, sizeof(msg), "[PID %d] Documento ID %d contém a keyword\n", getpid(), doc.id);
+                        write(STDOUT_FILENO, msg, len);
                     }
                 }
-                
-                close(pipe_grep[0]);
-            } else { // Erro no fork
-                close(pipe_grep[0]);
-                close(pipe_grep[1]);
+                close(pipefd[0]);
+            } else {
+                close(pipefd[0]);
+                close(pipefd[1]);
             }
         }
     }
-    
-    // Escreve os resultados no ficheiro temporário
-    // Primeiro escreve o número de IDs encontrados
+
     write(temp_fd, &count, sizeof(int));
-    // Depois escreve todos os IDs de uma só vez (mais eficiente do que um a um)
     if (count > 0) {
         write(temp_fd, found_ids, count * sizeof(int));
     }
-    
-    // Fecha os ficheiros
+
+    len = snprintf(msg, sizeof(msg), "[PID %d] Terminou com %d resultados\n", getpid(), count);
+    write(STDOUT_FILENO, msg, len);
+
     close(temp_fd);
     close(fd);
-    exit(0); // Termina o processo filho com sucesso
+    exit(0);
 }
 
 
-// Função para procurar documentos com uma palavra-chave (versão paralela otimizada)
+
 int search_documents_with_keyword_parallel(char* keyword, int* result_ids, int nr_processes) {
-    int count = 0; // Contador de documentos encontrados
-    
-    // 1. Primeiro, processa todos os documentos da cache (em memória)
-    for (int i = 0; i < cache.num_docs && count < MAX_RESULT_IDS; i++) {
-        // Usa a função count_lines_with_keyword para verificar se o documento contém a palavra-chave
-        int lines = count_lines_with_keyword(cache.docs[i], keyword);
-        if (lines > 0) {
-            // Se encontrou a palavra-chave, adiciona o ID aos resultados
-            result_ids[count++] = cache.docs[i]->id;
-        }
-    }
-    
-    // 2. Armazena os IDs da cache para informar aos processos filhos
-    // e evitar que eles verifiquem documentos já processados
+    int count = 0;
     int cache_ids[MAX_DOCS];
     int num_cache_ids = 0;
-    
-    for (int i = 0; i < cache.num_docs; i++) {
+
+    for (int i = 0; i < cache.num_docs && count < MAX_RESULT_IDS; i++) {
+        int lines = count_lines_with_keyword(cache.docs[i], keyword);
+        if (lines > 0) {
+            result_ids[count++] = cache.docs[i]->id;
+        }
         cache_ids[num_cache_ids++] = cache.docs[i]->id;
     }
-    
-    // 3. Verifica a existência do ficheiro da base de dados
+
     int fd = open("database.bin", O_RDONLY);
     if (fd < 0) {
-        // Se não existir base de dados, retorna apenas os documentos da cache
+        write(STDOUT_FILENO, "Base de dados não encontrada. Apenas documentos em cache processados.\n", 70);
         return count;
     }
-    
-    // 4. Lê o cabeçalho para obter o número de documentos na base de dados
+
     int next_id_disk, num_docs_disk;
     if (read(fd, &next_id_disk, sizeof(int)) != sizeof(int) ||
-        read(fd, &num_docs_disk, sizeof(int)) != sizeof(int) ||
-        num_docs_disk <= 0) {
+        read(fd, &num_docs_disk, sizeof(int)) != sizeof(int) || num_docs_disk <= 0) {
         close(fd);
-        return count; // Retorna se não houver documentos ou se a leitura falhar
+        write(STDOUT_FILENO, "Base de dados inválida ou vazia.\n", 34);
+        return count;
     }
-    close(fd); // Fecha o descritor do ficheiro, cada processo filho abrirá novamente
-    
-    // 5. Ajusta o número de processos conforme necessário
-    if (nr_processes <= 0) nr_processes = 1; // Garante pelo menos 1 processo
-    if (nr_processes > num_docs_disk) nr_processes = num_docs_disk; // Não excede o número de documentos
-    if (nr_processes > 8) nr_processes = 20; // Limita a 20 processos para evitar sobrecarga do sistema
-    
-    // 6. Se for para usar apenas 1 processo ou poucos documentos, não vale a pena paralelizar
+    close(fd);
+
+    if (nr_processes <= 0) nr_processes = 1;
+    if (nr_processes > num_docs_disk) nr_processes = num_docs_disk;
+    if (nr_processes > 20) nr_processes = 20;
     if (nr_processes <= 1 || num_docs_disk <= 10) {
-        return search_documents_with_keyword_serial(keyword, result_ids);
+        write(STDOUT_FILENO, "A usar versão serial para pesquisa.\n", 36);
+        return search_documents_with_keyword_serial(keyword, result_ids + count) + count;
     }
-    
-    // 7. Divide os documentos entre os processos de forma equilibrada
-    int docs_per_process = num_docs_disk / nr_processes; // Documentos por processo (divisão inteira)
-    int remaining = num_docs_disk % nr_processes; // Documentos restantes após divisão
-    
-    // Arrays para armazenar os PIDs dos processos filhos e nomes dos ficheiros temporários
+
+    char debug_msg[128];
+    int len = snprintf(debug_msg, sizeof(debug_msg), "A usar pesquisa paralela com %d processos.\n", nr_processes);
+    write(STDOUT_FILENO, debug_msg, len);
+
+    int docs_per_process = num_docs_disk / nr_processes;
+    int remainder = num_docs_disk % nr_processes;
+
     pid_t pids[nr_processes];
-    char temp_files[nr_processes][64]; // Nomes dos ficheiros temporários para cada processo
-    
-    // 8. Cria os processos filhos, cada um responsável por uma parte dos documentos
+    char temp_files[nr_processes][64];
+
     for (int i = 0; i < nr_processes; i++) {
-        // Calcula o intervalo de documentos para este processo
-        // Distribui os documentos restantes um para cada processo, começando pelo primeiro
-        int start = i * docs_per_process + (i < remaining ? i : remaining);
-        int end = start + docs_per_process + (i < remaining ? 1 : 0);
-        
-        // Cria um nome de ficheiro temporário único para este processo
-        // Usa o PID do processo pai e o índice do filho para garantir unicidade
-        sprintf(temp_files[i], "/tmp/search_results_%d_%d.tmp", getpid(), i);
-        
-        // Cria o processo filho usando fork()
+        int start = i * docs_per_process + (i < remainder ? i : remainder);
+        int end = start + docs_per_process + (i < remainder ? 1 : 0);
+
+        if (start >= end) continue;
+
+        snprintf(temp_files[i], sizeof(temp_files[i]), "/tmp/search_results_%d_%d.tmp", getpid(), i);
+
+        len = snprintf(debug_msg, sizeof(debug_msg), "A criar processo filho %d para documentos [%d, %d)\n", i, start, end);
+        write(STDOUT_FILENO, debug_msg, len);
+
         pid_t pid = fork();
-        
+
         if (pid == 0) {
-            // Código executado pelo processo filho
             search_process(start, end, keyword, temp_files[i], cache_ids, num_cache_ids);
-            // Nota: search_process chama exit(0), portanto o código não continua aqui no filho
+            exit(0);
         } else if (pid > 0) {
-            // Código executado pelo processo pai: guarda o PID do filho criado
             pids[i] = pid;
         } else {
-            // Erro no fork
-            write(STDERR_FILENO, "Erro ao criar processo filho\n", strlen("Erro ao criar processo filho\n"));
-            // Continua com os processos que foram criados com sucesso
+            write(STDERR_FILENO, "Erro ao criar processo filho\n", 30);
         }
     }
-    
-    // 9. Processo pai aguarda que todos os processos filhos terminem
+
     for (int i = 0; i < nr_processes; i++) {
-        waitpid(pids[i], NULL, 0); // Espera pelo término do processo filho
+        waitpid(pids[i], NULL, 0);
     }
-    
-    // 10. Combina os resultados de todos os processos filhos
+
     for (int i = 0; i < nr_processes && count < MAX_RESULT_IDS; i++) {
-        // Abre o ficheiro temporário criado pelo processo filho
         int temp_fd = open(temp_files[i], O_RDONLY);
         if (temp_fd >= 0) {
-            int num_ids; // Número de IDs encontrados por este processo
-            // Lê o número de IDs
+            int num_ids = 0;
             if (read(temp_fd, &num_ids, sizeof(int)) == sizeof(int) && num_ids > 0) {
-                // Lê todos os IDs de uma vez
-                int batch_ids[num_ids];
-                if (read(temp_fd, batch_ids, num_ids * sizeof(int)) == num_ids * sizeof(int)) {
-                    // Adiciona ao resultado final até o limite MAX_RESULT_IDS
+                int buffer[MAX_RESULT_IDS];
+                int bytes = read(temp_fd, buffer, num_ids * sizeof(int));
+                if (bytes == num_ids * sizeof(int)) {
                     for (int j = 0; j < num_ids && count < MAX_RESULT_IDS; j++) {
-                        result_ids[count++] = batch_ids[j];
+                        result_ids[count++] = buffer[j];
                     }
+
+                    len = snprintf(debug_msg, sizeof(debug_msg), "Processo %d encontrou %d documentos\n", i, num_ids);
+                    write(STDOUT_FILENO, debug_msg, len);
                 }
             }
-            close(temp_fd); // Fecha o ficheiro temporário
-            unlink(temp_files[i]); // Remove o ficheiro temporário do sistema de ficheiros
+            close(temp_fd);
+            unlink(temp_files[i]);
         }
     }
-    
-    return count; // Retorna o número total de documentos encontrados
+
+    len = snprintf(debug_msg, sizeof(debug_msg), "Total de documentos encontrados: %d\n", count);
+    write(STDOUT_FILENO, debug_msg, len);
+
+    return count;
 }
 
-// Função para gravar os documentos em disco
+
+
 void save_documents() {
-    // Apenas grava se houver modificações na cache
-    if (!cache.modified) {
-        return; // Não há necessidade de gravar se não houve alterações
-    }
-    
-    // Abre o ficheiro da base de dados para escrita, criando-o se não existir
-    // O_TRUNC garante que o conteúdo anterior é apagado
+    if (!cache.modified) return;
+
     int fd = open("database.bin", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
         write(STDERR_FILENO, "Erro ao abrir ficheiro da base de dados\n", strlen("Erro ao abrir ficheiro da base de dados\n"));
         return;
     }
-    
+
     write(STDOUT_FILENO, "A gravar documentos na base de dados...\n", strlen("A gravar documentos na base de dados...\n"));
-    
-    // Escreve o próximo ID disponível no início do ficheiro
+
+    // Grava o next_id (valor global para novos IDs)
     write(fd, &next_id, sizeof(int));
-    
-    // Prepara um array com todos os documentos a gravar
+
+    // Prepara um buffer com documentos válidos da cache
     int total_docs = 0;
-    Document all_docs[MAX_DOCS];
-    
-    // Copia todos os documentos da cache para o array temporário
+    Document valid_docs[MAX_DOCS];
+
     for (int i = 0; i < cache.num_docs; i++) {
-        memcpy(&all_docs[total_docs], cache.docs[i], sizeof(Document));
-        total_docs++;
+        if (cache.docs[i] != NULL) {
+            memcpy(&valid_docs[total_docs], cache.docs[i], sizeof(Document));
+            total_docs++;
+        }
     }
-    
-    // Escreve a quantidade total de documentos após o next_id
+
+    // Grava o número total de documentos válidos
     write(fd, &total_docs, sizeof(int));
-    
-    // Escreve cada documento no ficheiro
+
+    // Grava todos os documentos
     for (int i = 0; i < total_docs; i++) {
-        write(fd, &all_docs[i], sizeof(Document));
+        write(fd, &valid_docs[i], sizeof(Document));
     }
-    
-    close(fd); // Fecha o ficheiro após escrita
-    
-    // Mostra mensagem de sucesso
-    char msg[128];
-    int len = snprintf(msg, sizeof(msg), "Documentos gravados com sucesso. Total: %d\n", total_docs);
+
+    close(fd);
+
+    char msg[64];
+    int len = snprintf(msg, sizeof(msg), "Gravados %d documentos com sucesso.\n", total_docs);
     write(STDOUT_FILENO, msg, len);
-    
-    // Marca a cache como não modificada, pois agora está sincronizada com o disco
+
     cache.modified = 0;
 }
 

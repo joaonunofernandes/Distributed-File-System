@@ -21,4 +21,4 @@ obj/%.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 	
 clean:
-	rm -f obj/* tmp/* bin/*
+	rm -f obj/* tmp/* bin/dclient bin/dserver

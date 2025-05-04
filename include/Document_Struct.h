@@ -16,7 +16,8 @@
 #define MAX_TITLE_SIZE 200
 #define MAX_AUTHORS_SIZE 200
 #define MAX_YEAR_SIZE 5    // 4 caracteres + terminador nulo
-#define MAX_PATH_SIZE 200  // Aumentado devido à dimensão do caminho no PC
+#define MAX_PATH_SIZE 200  // Voltei ao original para testar (estava 200)
+//len('/Users/jnf/Documents/University/2024_2025/Second Semester/SO/TrabalhoPratico/SistemasOperativos/documentos/1409.txt') = 115
 #define MAX_KEYWORD_SIZE 64
 #define MAX_DOCS 2000      // Número máximo de documentos na cache/disco (ajustar conforme necessário)
 #define MAX_RESULT_IDS 1000 // Número máximo de IDs retornados numa pesquisa

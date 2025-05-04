@@ -858,8 +858,25 @@ int main(int argc, char* argv[]) {
     // Armazena a pasta base dos documentos (argumento obrigatório)
     strcpy(base_folder, argv[1]);
     
-    // Configura o tamanho da cache (argumento opcional, padrão: 100)
-    cache.max_size = (argc > 2) ? atoi(argv[2]) : 100;
+        // Configura o tamanho da cache
+        int requested_cache_size = (argc > 2) ? atoi(argv[2]) : 100; // Padrão 100
+
+        // Adicionar verificação e aviso
+        if (requested_cache_size > MAX_DOCS) {
+            char warning_msg[256];
+            snprintf(warning_msg, sizeof(warning_msg),
+                    "Aviso: Tamanho da cache pedido (%d) excede o máximo de documentos (%d). A usar %d.\n",
+                    requested_cache_size, MAX_DOCS, MAX_DOCS);
+            write(STDOUT_FILENO, warning_msg, strlen(warning_msg));
+            cache.max_size = MAX_DOCS; // Limita ao máximo definido
+        } else if (requested_cache_size <= 0) {
+            write(STDOUT_FILENO, "Aviso: Tamanho da cache inválido. A usar tamanho padrão 100.\n", strlen("Aviso: Tamanho da cache inválido. A usar tamanho padrão 100.\n"));
+            cache.max_size = 100; // Usa o padrão se for inválido
+        }
+        else {
+            cache.max_size = requested_cache_size; // Usa o tamanho pedido
+        }
+
     cache.num_docs = 0; // Inicialmente sem documentos
     cache.modified = 0; // Cache não modificada no início
     
@@ -868,7 +885,6 @@ int main(int argc, char* argv[]) {
     signal(SIGTERM, handle_signals); // kill
     
     write(STDOUT_FILENO, "A iniciar servidor...\n", strlen("A iniciar servidor...\n"));
-    /* Código removido que criava a base de dados ao iniciar */
     
     // Carrega os documentos do disco para a cache
     load_documents();

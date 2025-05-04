@@ -3,3 +3,4 @@
 ./dclient -a "Lincoln's First Inaugural Address, March 4, 1861" "Abraham Lincoln" "1979" "9.txt"
 ./dclient -a "Alice's Adventures in Wonderland" "Lewis Carroll" "1994" "11.txt"
 ./dclient -a "The King James Bible" "King James" "1989" "10.txt"
+./dclient -a "textogrande" "Eu" "2025" "textogrande.txt"

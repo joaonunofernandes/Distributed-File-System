@@ -4,3 +4,7 @@
 ./dclient -a "Alice's Adventures in Wonderland" "Lewis Carroll" "1994" "11.txt"
 ./dclient -a "The King James Bible" "King James" "1989" "10.txt"
 ./dclient -a "textogrande" "Eu" "2025" "textogrande.txt"
+
+
+./dserver ../documentos 2000
+./dserver /Users/jnf/Documents/University/2024_2025/Second\ Semester/SO/TrabalhoPratico/SistemasOperativos/documentos 3000     
